@@ -1,0 +1,117 @@
+name: Mirror GARAGE LIFE and publish browser version
+
+on:
+  push:
+    paths:
+      - .github/workflows/mirror-garage.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: garage-life-standalone
+  cancel-in-progress: false
+
+jobs:
+  mirror-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Fetch GARAGE LIFE build from its original GitHub repo
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 --max-time 180 \
+            "https://codeload.github.com/tima0922/moy-saut/zip/refs/heads/main" \
+            -o /tmp/wong-source.zip
+          python3 - <<'PY'
+          import zipfile
+          from pathlib import Path, PurePosixPath
+          with zipfile.ZipFile('/tmp/wong-source.zip') as z:
+              files=[i for i in z.infolist() if not i.is_dir() and '/67/' in i.filename]
+              assert files, 'GARAGE LIFE /67 directory missing in source'
+              for i in files:
+                  left, sep, right=i.filename.partition('/67/')
+                  assert left == 'moy-saut-main' and sep
+                  path=PurePosixPath(right)
+                  assert not path.is_absolute() and '..' not in path.parts
+                  target=Path('_site').joinpath(*path.parts)
+                  target.parent.mkdir(parents=True,exist_ok=True)
+                  target.write_bytes(z.read(i))
+              for required in ['index.html','style.css','js/main.js','vendor/three/build/three.module.js','assets/pbr/garage_tile_normal.png']:
+                  assert Path('_site',required).exists(), f'Missing {required}'
+              print(f'GARAGE LIFE static files: {len(files)}')
+          PY
+
+      - name: Mirror game files to independent repository
+        run: |
+          set -euo pipefail
+          cp -a _site/. ./
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add -- index.html style.css credits.html js assets vendor .nojekyll _headers
+          if ! git diff --cached --quiet; then
+            git commit -m "Mirror original GARAGE LIFE 0.3 static assets"
+            git push origin HEAD:main
+          else
+            echo "Static assets already mirrored"
+          fi
+
+      - name: Verify browser-ready original site using GitHack proxy
+        run: |
+          set -euo pipefail
+          url="https://raw.githack.com/tima0922/moy-saut/main/67"
+          curl --fail --location --retry 3 --max-time 50 \
+            -A 'GitHubActions GARAGE-LIFE smoke' "$url/index.html" -o /tmp/game.html
+          grep -q 'GARAGE LIFE' /tmp/game.html
+          grep -q 'canvas id="scene"' /tmp/game.html
+          for asset in style.css js/main.js vendor/three/build/three.module.js assets/pbr/garage_tile_normal.png; do
+            code=$(curl --location --retry 2 -s -o /dev/null -w '%{http_code}' "$url/$asset")
+            test "$code" = 200 || { echo "Failed to fetch $asset; HTTP $code"; exit 1; }
+          done
+          echo "Temporary browser preview: $url/index.html" >> "$GITHUB_STEP_SUMMARY"
+          echo 'Original game HTML and essential resources fetched OK.'
+
+      - name: Attempt to enable standalone GitHub Pages
+        id: enable
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/${GITHUB_REPOSITORY}/pages" >/dev/null 2>&1; then
+            echo "GitHub Pages already enabled"
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          elif printf '{"source":{"branch":"main","path":"/"}}' | gh api \
+             --method POST "repos/${GITHUB_REPOSITORY}/pages" \
+             --input - >/tmp/pages-enable.json 2>/tmp/pages-enable.err; then
+            cat /tmp/pages-enable.json
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            cat /tmp/pages-enable.err || true
+            echo 'GitHub Pages enablement may need Settings -> Pages -> Deploy from a branch.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload independent game site
+        if: steps.enable.outputs.enabled == 'true'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+      - name: Deploy independent GitHub Pages
+        if: steps.enable.outputs.enabled == 'true'
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Deployment information
+        if: always()
+        run: |
+          echo '### GARAGE LIFE 0.3' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Original game: https://github.com/tima0922/moy-saut/tree/main/67' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Independent source: https://github.com/tima0922/tima' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Standalone Pages target: https://tima0922.github.io/tima/' >> "$GITHUB_STEP_SUMMARY"
