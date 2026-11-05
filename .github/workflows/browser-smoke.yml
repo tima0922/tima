@@ -1,0 +1,57 @@
+name: GARAGE LIFE WebGL browser smoke test
+
+on:
+  push:
+    paths:
+      - .github/workflows/browser-smoke.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Playwright and browser
+        run: |
+          npm install --no-save --no-audit --no-fund playwright@1.56.1
+          npx playwright install --with-deps chromium
+      - name: Run real browser and inspect WebGL render
+        run: |
+          python3 -m http.server 8765 --bind 127.0.0.1 > /tmp/garage-http.log 2>&1 &
+          sleep 2
+          node <<'JS'
+          const { chromium } = require('playwright');
+          (async()=>{
+            const browser=await chromium.launch({
+              headless:true,
+              args:['--no-sandbox','--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader','--ignore-gpu-blocklist','--enable-webgl']
+            });
+            const page=await browser.newPage({viewport:{width:1280,height:800}});
+            const errors=[],badRequests=[];
+            page.on('pageerror',e=>errors.push(e.message));
+            page.on('response',res=>{if(res.status()>=400) badRequests.push(res.status()+' '+res.url())});
+            await page.goto('http://127.0.0.1:8765/',{waitUntil:'load',timeout:60000});
+            await page.waitForTimeout(6000);
+            const info=await page.evaluate(()=>{
+              const canvas=document.querySelector('#scene');
+              const gl=canvas?.getContext('webgl2') || canvas?.getContext('webgl');
+              return {title:document.title, canvas:!!canvas, canvasWidth:canvas?.width,canvasHeight:canvas?.height,webgl:!!gl,
+                version:gl?.getParameter(gl.VERSION),welcomeVisible:!!document.getElementById('welcome'),loadingText:document.getElementById('loading-text')?.textContent};
+            });
+            console.log('GARAGE_BROWSER_DIAGNOSTICS',JSON.stringify({info,errors,badRequests}));
+            await page.screenshot({path:'/tmp/garage-browser.png',fullPage:true});
+            await browser.close();
+            if(!info.title.includes('GARAGE LIFE')||!info.canvas||info.canvasWidth<100||info.canvasHeight<100||!info.webgl||errors.length||badRequests.length) process.exitCode=1;
+          })().catch(e=>{console.error(e);process.exitCode=1});
+          JS
+      - name: Upload screenshot regardless of test result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: garage-life-webgl-smoke
+          path: /tmp/garage-browser.png
+          if-no-files-found: ignore
