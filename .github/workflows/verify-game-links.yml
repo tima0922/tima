@@ -1,0 +1,36 @@
+name: Verify playable GARAGE LIFE static URLs
+
+on:
+  push:
+    paths:
+      - .github/workflows/verify-game-links.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check exact preview links and required game assets
+        run: |
+          set -euo pipefail
+          for prefix in \
+            "https://raw.githack.com/tima0922/tima/main" \
+            "https://rawcdn.githack.com/tima0922/tima/065a937a15f923d3b51e7fff4618e90ffc9ff7bf"; do
+            echo "==== VERIFYING $prefix ===="
+            curl --fail --location --retry 3 --retry-delay 2 --max-time 75 \
+              -D /tmp/h -o /tmp/index "$prefix/index.html"
+            grep -q '<title>GARAGE LIFE' /tmp/index
+            grep -q '<canvas id="scene"' /tmp/index
+            tr -d '\r' < /tmp/h | grep -i 'content-type:' | tail -1
+            for asset in style.css js/main.js js/world.js vendor/three/build/three.module.js assets/kenney/workbench.glb assets/pbr/garage_tile_normal.png; do
+              code=$(curl --silent --show-error --location --retry 2 --max-time 80 -o /dev/null -w '%{http_code}' "$prefix/$asset")
+              echo "$code $asset"
+              test "$code" = 200
+            done
+          done
+          echo '### Verified game URLs' >> "$GITHUB_STEP_SUMMARY"
+          echo 'https://raw.githack.com/tima0922/tima/main/index.html' >> "$GITHUB_STEP_SUMMARY"
+          echo 'https://rawcdn.githack.com/tima0922/tima/065a937a15f923d3b51e7fff4618e90ffc9ff7bf/index.html' >> "$GITHUB_STEP_SUMMARY"
